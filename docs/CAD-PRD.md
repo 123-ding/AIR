@@ -46,10 +46,14 @@
 - **自动区域识别**：闭合矩形多段线 + 图层关键词聚合（`AREA-*` / `ZONE-*` / `区` / `分区`）+ 标题栏过滤 + 重叠去重
 - **型号库管理后台 + 价格历史版本**：`CatalogStore` 持久化（YAML）+ JSONL 价格历史 + REST CRUD `/admin/catalog/...`
 
-### P2
-- DWG 原生支持（ODA File Converter / LibreDWG）
-- LLM 辅助参数补全
-- PDF 报价模板、客户/价格分级、多币种
+### P2（已实现）
+- **DWG 原生支持**：`app/cad/dwg.py` 自动探测 ODA File Converter / LibreDWG `dwg2dxf`，把 `.dwg` 转换为 `.dxf` 后再走原解析路径；`parse_cad(path)` 是统一入口；CLI/HTTP 接口现接受 `.dwg`
+- **LLM 辅助参数补全**：`app/llm/`，可插拔 `LLMBackend`：内置 `StubLLMBackend`（启发式正则、离线、确定性）+ `OpenAILLMBackend`（懒加载 `openai`）；`complete_items()` 仅对参数缺失项调用，自动注入 `[LLM:<source>]` 备注
+- **PDF 报价模板 / 客户分级 / 多币种**：
+  - `app/quote/customers.py` 提供 `CustomerProfile` + `CustomerRegistry`（内置 default/silver/gold/platinum，可由 YAML 覆盖）
+  - `build_quote(... customer=, exchange_rate=)` 在策略价之上叠加客户折扣因子，并按 `1 CNY → currency` 换算所有金额（包括 BundleStrategy 的人工/运输费）
+  - `to_pdf()` 通过 reportlab 渲染中英混排 PDF（自动注册系统中可用的 CJK 字体）
+  - 对应 REST：`/quote/pdf`、`/customers`，`/quote` 新增 `customer_level`/`currency`/`exchange_rate`/`llm_backend` 字段
 
 ## 5. 关键模块
 
@@ -88,11 +92,14 @@
 
 - Python 3.10+
 - 依赖：`ezdxf`、`matplotlib`、`Pillow`、`pandas`、`openpyxl`、`PyYAML`、`fastapi`、`uvicorn`
+- P1 可选：`paddleocr`（OCR 兜底）
+- P2 可选：`reportlab`（PDF 导出）、`openai`（LLM 补全）、ODA File Converter 或 LibreDWG（DWG）
 - 单元测试覆盖核心策略与目录加载
 - 离线可用（OCR/LLM 为可选项）
 
 ## 9. 风险
 
-- DWG 文件无法直接解析，需外部转换器 → P2 处理
+- DWG 文件无法直接解析 → P2 已通过 ODA File Converter / LibreDWG 接入；运行时未安装则提示用户
 - 图纸中型号写法不规范 → 通过型号库别名 + 模糊匹配兜底
 - OCR 中文识别精度 → P1 引入 PaddleOCR 时评估
+- LLM 补全的字段可能不准 → 仅作"参数缺失兜底"，并在备注中显式标注 `[LLM:<source>]`，便于人工复核

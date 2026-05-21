@@ -7,6 +7,7 @@ from typing import Iterable, List, Optional, Sequence
 
 from ..catalog.catalog import ProductCatalog
 from ..ocr.extractor import EquipmentItem
+from .customers import CustomerProfile
 from .strategies import (
     BundleStrategy,
     QuoteInput,
@@ -25,6 +26,8 @@ class Quote:
     extras: List[tuple] = field(default_factory=list)  # [(label, amount), ...]
     total: float = 0.0
     currency: str = "CNY"
+    customer_level: str = ""
+    exchange_rate: float = 1.0
 
 
 def _aggregate_items(
@@ -57,10 +60,15 @@ def build_quote(
     catalog: Optional[ProductCatalog] = None,
     currency: str = "CNY",
     aggregate: bool = True,
+    customer: Optional[CustomerProfile] = None,
+    exchange_rate: Optional[float] = None,
 ) -> Quote:
     """根据设备清单与报价策略构建一份报价单。
 
     :param aggregate: 是否按型号合并数量（默认 True）。
+    :param customer: 可选客户档案；其 ``discount_factor`` 会作用在每行单价/小计，
+        其 ``currency`` / ``exchange_rate`` 会决定最终报价币种和换算系数。
+    :param exchange_rate: 显式覆盖换算系数（1 CNY → ``currency``）。
     """
 
     item_list = list(items)
@@ -89,15 +97,60 @@ def build_quote(
         )
 
     lines = strategy.price_all(quote_inputs)
+
+    # ---- 客户分级折扣（在策略报价之上再叠加）----
+    cust_factor = 1.0
+    final_currency = currency
+    rate = exchange_rate if exchange_rate is not None else 1.0
+    customer_level = ""
+    if customer is not None:
+        cust_factor = float(customer.discount_factor)
+        final_currency = customer.currency or currency
+        if exchange_rate is None:
+            rate = float(customer.exchange_rate)
+        customer_level = customer.level
+
+    if cust_factor != 1.0 or rate != 1.0:
+        new_lines: List[QuoteLine] = []
+        for ln in lines:
+            new_unit = round(ln.unit_price * cust_factor * rate, 2)
+            new_subtotal = round(new_unit * ln.quantity, 2)
+            extra_note = []
+            if cust_factor != 1.0 and customer is not None:
+                extra_note.append(
+                    f"客户[{customer.level}]×{cust_factor:.3f}"
+                )
+            if rate != 1.0:
+                extra_note.append(f"汇率×{rate:.4f}→{final_currency}")
+            note = ln.note
+            if extra_note:
+                note = f"{note} | {' '.join(extra_note)}" if note else " ".join(extra_note)
+            new_lines.append(
+                QuoteLine(
+                    model=ln.model,
+                    quantity=ln.quantity,
+                    unit=ln.unit,
+                    unit_price=new_unit,
+                    discount=round(ln.discount * cust_factor, 4),
+                    subtotal=new_subtotal,
+                    brand=ln.brand,
+                    note=note,
+                )
+            )
+        lines = new_lines
+
     subtotal = round(sum(l.subtotal for l in lines), 2)
     extras: List[tuple] = []
     total = subtotal
 
     if isinstance(strategy, BundleStrategy):
+        # 注意：人工/运输也按客户因子与汇率换算
         if strategy.labor:
-            extras.append(("人工费", round(strategy.labor, 2)))
+            extras.append(("人工费", round(strategy.labor * cust_factor * rate, 2)))
         if strategy.transport:
-            extras.append(("运输费", round(strategy.transport, 2)))
+            extras.append(
+                ("运输费", round(strategy.transport * cust_factor * rate, 2))
+            )
         total = subtotal + sum(amount for _, amount in extras)
         if strategy.extra_pct:
             uplift = round(total * strategy.extra_pct, 2)
@@ -111,5 +164,7 @@ def build_quote(
         subtotal=subtotal,
         extras=extras,
         total=total,
-        currency=currency,
+        currency=final_currency,
+        customer_level=customer_level,
+        exchange_rate=rate,
     )

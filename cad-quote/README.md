@@ -57,6 +57,45 @@ cad-quote/
 pip install paddleocr  # 仅在需要 OCR 时
 ```
 
+### P2 增量
+
+```
+cad-quote/
+└── app/
+    ├── cad/dwg.py          # DWG → DXF（ODA File Converter / LibreDWG 自动探测）
+    ├── llm/                # LLMBackend / StubLLMBackend / OpenAILLMBackend + completer
+    └── quote/
+        ├── customers.py    # CustomerProfile / CustomerRegistry（YAML 可覆盖）
+        └── exporter.py     # to_pdf()（reportlab 懒加载，自动注册 CJK 字体）
+```
+
+P2 可选依赖：
+
+```bash
+pip install reportlab   # PDF 导出
+pip install openai      # 启用 OpenAILLMBackend
+# DWG 转换器二选一：
+#   ODA File Converter:  https://www.opendesign.com/guestfiles/oda_file_converter
+#   LibreDWG (dwg2dxf):  https://www.gnu.org/software/libredwg/
+```
+
+新接口示例：
+
+```bash
+# CLI: 黄金客户、美元报价、PDF 导出 + LLM 参数补全
+python -m app.cli quote \
+  --dxf drawing.dxf --regions regions.json \
+  --customer-level gold --currency USD --exchange-rate 0.14 \
+  --llm stub --pdf out.pdf
+
+# CLI: DWG 直接当输入
+python -m app.cli quote --dxf drawing.dwg --regions regions.json
+
+# REST: PDF
+curl -F file=@drawing.dxf -F request_json='{"regions":[{"name":"r","bbox":[0,0,100,100]}],"customer_level":"gold"}' \
+     http://127.0.0.1:8000/quote/pdf -o quote.pdf
+```
+
 ## 🧰 命令行用法
 
 ```bash
@@ -156,9 +195,4 @@ class MyStrategy(QuoteStrategy):
 
 ## 📌 关于 DWG
 
-`ezdxf` 不直接读 `.dwg`。推荐：
-
-1. 使用 [ODA File Converter](https://www.opendesign.com/guestfiles/oda_file_converter) 或 [LibreDWG](https://www.gnu.org/software/libredwg/) 将 `.dwg` 批量转 `.dxf`；
-2. 然后走本模块的标准流程。
-
-P2 阶段会内置 DWG → DXF 的自动转换。
+`ezdxf` 不直接读 `.dwg`。本仓库 P2 已集成自动转换：安装 [ODA File Converter](https://www.opendesign.com/guestfiles/oda_file_converter) 或 [LibreDWG](https://www.gnu.org/software/libredwg/)（提供 `dwg2dxf` 命令）后，CLI / REST 接口均可直接接受 `.dwg`。也可手动 `python -m app.cli convert-dwg --dwg foo.dwg` 做单文件转换。

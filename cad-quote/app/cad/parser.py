@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from typing import Iterable, List, Optional, Tuple
 
@@ -176,6 +177,25 @@ def parse_dxf(path: str) -> CadDocument:
     return CadDocument(
         texts=texts, inserts=inserts, polylines=polylines, extents=extents
     )
+
+
+def parse_cad(path: str, **dwg_kwargs) -> CadDocument:
+    """解析 CAD 文件：``.dxf`` 直接走 :func:`parse_dxf`；``.dwg`` 先转换再解析。
+
+    :param dwg_kwargs: 透传给 :func:`app.cad.dwg.convert_dwg_to_dxf`，例如
+        ``runner=...`` / ``converter=...``，便于测试注入。
+    :raises ValueError: 不识别的扩展名。
+    """
+
+    ext = os.path.splitext(path)[1].lower()
+    if ext == ".dxf":
+        return parse_dxf(path)
+    if ext == ".dwg":
+        from .dwg import convert_dwg_to_dxf
+
+        dxf_path = convert_dwg_to_dxf(path, **dwg_kwargs)
+        return parse_dxf(dxf_path)
+    raise ValueError(f"不支持的 CAD 文件扩展名：{ext!r}（仅支持 .dxf / .dwg）")
 
 
 def filter_by_bboxes(

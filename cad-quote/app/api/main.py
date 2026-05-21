@@ -21,12 +21,13 @@ except ImportError as exc:  # pragma: no cover
     ) from exc
 
 from ..cad.auto_regions import detect_regions
-from ..cad.parser import parse_dxf
+from ..cad.parser import parse_cad
 from ..catalog.catalog import ProductCatalog
 from ..ocr.backends import make_backend
 from ..ocr.extractor import extract_from_regions
+from ..quote.customers import default_registry as default_customer_registry
 from ..quote.engine import build_quote
-from ..quote.exporter import to_excel, quote_to_rows
+from ..quote.exporter import to_excel, to_pdf, quote_to_rows
 from ..quote.strategies import available_strategies, create_strategy
 from .admin import get_store, router as admin_router
 
@@ -69,6 +70,11 @@ class QuoteRequest(BaseModel):
     strategy_params: dict = {}
     ocr_backend: Optional[str] = None
     ocr_params: dict = {}
+    customer_level: Optional[str] = None
+    currency: Optional[str] = None
+    exchange_rate: Optional[float] = None
+    llm_backend: Optional[str] = None
+    llm_params: dict = {}
 
 
 _DEFAULT_CATALOG: Optional[ProductCatalog] = None
@@ -103,9 +109,110 @@ def list_catalog():
     return {"count": len(cat), "models": cat.models()}
 
 
+def _validate_body_and_suffix(file: UploadFile, body: "QuoteRequest") -> str:
+    if not body.regions:
+        raise HTTPException(status_code=400, detail="至少需要 1 个区域。")
+    suffix = os.path.splitext(file.filename or "")[1].lower() or ".dxf"
+    if suffix not in (".dxf", ".dwg"):
+        raise HTTPException(status_code=400, detail="仅支持 .dxf / .dwg 文件。")
+    return suffix
+
+
+async def _read_file(file: UploadFile) -> bytes:
+    return await file.read()
+
+
+def _apply_customer_and_llm(items, catalog, body: "QuoteRequest"):
+    """LLM 补全 + 选择客户档案；返回 ``(items, customer)``。"""
+
+    if body.llm_backend:
+        from ..llm import complete_items, make_backend as make_llm_backend
+
+        try:
+            llm_backend = make_llm_backend(body.llm_backend, **(body.llm_params or {}))
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=400, detail=f"LLM 后端构造失败: {exc}")
+        items = complete_items(items, llm_backend, catalog=catalog)
+
+    customer = None
+    if body.customer_level:
+        customer = default_customer_registry().get(body.customer_level)
+        if customer is None:
+            raise HTTPException(
+                status_code=400, detail=f"未知客户等级: {body.customer_level}"
+            )
+    return items, customer
+
+
+def _build_quote_from_upload(
+    file_bytes: bytes, suffix: str, body: "QuoteRequest"
+):
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+        tmp.write(file_bytes)
+        tmp_path = tmp.name
+    try:
+        document = parse_cad(tmp_path)
+        catalog = get_catalog()
+        regions = [(r.name, tuple(r.bbox)) for r in body.regions]
+
+        ocr_backend = None
+        region_images = None
+        if body.ocr_backend:
+            try:
+                ocr_backend = make_backend(
+                    body.ocr_backend, **(body.ocr_params or {})
+                )
+            except Exception as exc:  # noqa: BLE001
+                raise HTTPException(
+                    status_code=400, detail=f"OCR 后端构造失败: {exc}"
+                )
+            try:
+                from ..cad.renderer import render_regions
+
+                tmp_dir = tempfile.mkdtemp(prefix="ocr_regions_")
+                paths = render_regions(
+                    tmp_path, [tuple(r.bbox) for r in body.regions], tmp_dir
+                )
+                region_images = {
+                    body.regions[i].name: paths[i]
+                    for i in range(min(len(paths), len(body.regions)))
+                }
+            except Exception:  # noqa: BLE001
+                region_images = None
+
+        items = extract_from_regions(
+            document,
+            regions,
+            catalog,
+            ocr_backend=ocr_backend,
+            region_images=region_images,
+        )
+        items, customer = _apply_customer_and_llm(items, catalog, body)
+
+        try:
+            strategy = create_strategy(body.strategy, **body.strategy_params)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+        currency = body.currency or (customer.currency if customer else "CNY")
+        return build_quote(
+            items,
+            strategy,
+            catalog=catalog,
+            currency=currency,
+            customer=customer,
+            exchange_rate=body.exchange_rate,
+        )
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
+
 @app.post("/quote")
 async def quote_endpoint(
-    file: UploadFile = File(..., description="DXF 文件"),
+    file: UploadFile = File(..., description="DXF / DWG 文件"),
     request_json: str = Form(..., description="JSON 字符串，结构同 QuoteRequest"),
 ):
     import json
@@ -114,67 +221,15 @@ async def quote_endpoint(
         body = QuoteRequest(**json.loads(request_json))
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=400, detail=f"无效的 request_json: {exc}")
-
-    if not body.regions:
-        raise HTTPException(status_code=400, detail="至少需要 1 个区域。")
-
-    suffix = os.path.splitext(file.filename or "")[1].lower() or ".dxf"
-    if suffix != ".dxf":
-        raise HTTPException(
-            status_code=400,
-            detail="仅支持 .dxf 文件，请先将 .dwg 转换为 .dxf。",
-        )
-
-    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-        tmp.write(await file.read())
-        tmp_path = tmp.name
-    try:
-        document = parse_dxf(tmp_path)
-    finally:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-
-    catalog = get_catalog()
-    regions = [(r.name, tuple(r.bbox)) for r in body.regions]
-
-    ocr_backend = None
-    region_images: Optional[dict] = None
-    if body.ocr_backend:
-        try:
-            ocr_backend = make_backend(body.ocr_backend, **(body.ocr_params or {}))
-        except Exception as exc:  # noqa: BLE001
-            raise HTTPException(status_code=400, detail=f"OCR 后端构造失败: {exc}")
-        # 渲染区域 PNG 供 OCR 使用（依赖 ezdxf + matplotlib，失败时跳过）
-        try:
-            from ..cad.renderer import render_regions
-
-            tmp_dir = tempfile.mkdtemp(prefix="ocr_regions_")
-            paths = render_regions(
-                tmp_path, [tuple(r.bbox) for r in body.regions], tmp_dir
-            )
-            region_images = {
-                body.regions[i].name: paths[i]
-                for i in range(min(len(paths), len(body.regions)))
-            }
-        except Exception:  # noqa: BLE001
-            region_images = None
-
-    items = extract_from_regions(
-        document, regions, catalog, ocr_backend=ocr_backend, region_images=region_images
-    )
-
-    try:
-        strategy = create_strategy(body.strategy, **body.strategy_params)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-
-    quote = build_quote(items, strategy, catalog=catalog)
+    suffix = _validate_body_and_suffix(file, body)
+    file_bytes = await _read_file(file)
+    quote = _build_quote_from_upload(file_bytes, suffix, body)
     return JSONResponse(
         {
             "strategy": quote.strategy_name,
             "currency": quote.currency,
+            "customer_level": quote.customer_level,
+            "exchange_rate": quote.exchange_rate,
             "lines": quote_to_rows(quote),
             "subtotal": quote.subtotal,
             "extras": [{"label": l, "amount": a} for l, a in quote.extras],
@@ -191,26 +246,9 @@ async def quote_excel(
     import json
 
     body = QuoteRequest(**json.loads(request_json))
-    if not body.regions:
-        raise HTTPException(status_code=400, detail="至少需要 1 个区域。")
-
-    suffix = os.path.splitext(file.filename or "")[1].lower() or ".dxf"
-    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-        tmp.write(await file.read())
-        tmp_path = tmp.name
-    try:
-        document = parse_dxf(tmp_path)
-    finally:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-
-    catalog = get_catalog()
-    regions = [(r.name, tuple(r.bbox)) for r in body.regions]
-    items = extract_from_regions(document, regions, catalog)
-    strategy = create_strategy(body.strategy, **body.strategy_params)
-    quote = build_quote(items, strategy, catalog=catalog)
+    suffix = _validate_body_and_suffix(file, body)
+    file_bytes = await _read_file(file)
+    quote = _build_quote_from_upload(file_bytes, suffix, body)
 
     out_dir = tempfile.mkdtemp(prefix="quote_")
     out_path = os.path.join(out_dir, "quote.xlsx")
@@ -222,6 +260,49 @@ async def quote_excel(
     )
 
 
+@app.post("/quote/pdf")
+async def quote_pdf(
+    file: UploadFile = File(...),
+    request_json: str = Form(...),
+    customer_name: str = Form(""),
+):
+    import json
+
+    body = QuoteRequest(**json.loads(request_json))
+    suffix = _validate_body_and_suffix(file, body)
+    file_bytes = await _read_file(file)
+    quote = _build_quote_from_upload(file_bytes, suffix, body)
+
+    out_dir = tempfile.mkdtemp(prefix="quote_pdf_")
+    out_path = os.path.join(out_dir, "quote.pdf")
+    try:
+        to_pdf(quote, out_path, customer_name=customer_name)
+    except ImportError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    return FileResponse(
+        out_path,
+        media_type="application/pdf",
+        filename="quote.pdf",
+    )
+
+
+@app.get("/customers")
+def list_customers():
+    registry = default_customer_registry()
+    return {
+        "customers": [
+            {
+                "level": p.level,
+                "discount_factor": p.discount_factor,
+                "currency": p.currency,
+                "exchange_rate": p.exchange_rate,
+                "description": p.description,
+            }
+            for p in (registry.profiles[k] for k in registry.list_levels())
+        ]
+    }
+
+
 @app.post("/auto-regions")
 async def auto_regions(
     file: UploadFile = File(..., description="DXF 文件"),
@@ -230,13 +311,13 @@ async def auto_regions(
     """根据 DXF 自动识别候选区域。"""
 
     suffix = os.path.splitext(file.filename or "")[1].lower() or ".dxf"
-    if suffix != ".dxf":
-        raise HTTPException(status_code=400, detail="仅支持 .dxf 文件。")
+    if suffix not in (".dxf", ".dwg"):
+        raise HTTPException(status_code=400, detail="仅支持 .dxf / .dwg 文件。")
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
         tmp.write(await file.read())
         tmp_path = tmp.name
     try:
-        document = parse_dxf(tmp_path)
+        document = parse_cad(tmp_path)
     finally:
         try:
             os.unlink(tmp_path)
@@ -264,15 +345,15 @@ async def preview(
     """
 
     suffix = os.path.splitext(file.filename or "")[1].lower() or ".dxf"
-    if suffix != ".dxf":
-        raise HTTPException(status_code=400, detail="仅支持 .dxf 文件。")
+    if suffix not in (".dxf", ".dwg"):
+        raise HTTPException(status_code=400, detail="仅支持 .dxf / .dwg 文件。")
 
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
         tmp.write(await file.read())
         dxf_path = tmp.name
 
     try:
-        document = parse_dxf(dxf_path)
+        document = parse_cad(dxf_path)
         # 选取整张图作为 bbox：优先使用 EXTMIN/EXTMAX，缺失时用文档 bbox
         from ..cad.auto_regions import _document_bbox  # 内部工具
         from ..cad.renderer import render_regions
