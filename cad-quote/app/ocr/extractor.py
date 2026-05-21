@@ -13,6 +13,7 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from ..cad.parser import BBox, CadDocument, CadInsert, CadText
 from ..catalog.catalog import ProductCatalog
+from .backends import OCRBackend
 
 
 @dataclass
@@ -77,8 +78,15 @@ def extract_from_region(
     bbox: BBox,
     region_name: str,
     catalog: ProductCatalog,
+    ocr_backend: Optional[OCRBackend] = None,
+    region_image: Optional[str] = None,
 ) -> List[EquipmentItem]:
-    """从一个区域内识别设备项。"""
+    """从一个区域内识别设备项。
+
+    :param ocr_backend: 可选 OCR 后端；当区域内没有可命中型号的 TEXT/MTEXT 时，
+        会调用 ``ocr_backend.recognize(region_image)`` 兜底。
+    :param region_image: 区域已渲染的 PNG 路径，仅在启用 ``ocr_backend`` 时使用。
+    """
 
     texts: List[CadText] = document.texts_in(bbox)
     inserts: List[CadInsert] = document.inserts_in(bbox)
@@ -106,6 +114,23 @@ def extract_from_region(
         if canonical in catalog:
             counter[canonical] += 1
 
+    # 3) OCR 兜底：当 TEXT/INSERT 都没找到任何已知型号时，调用 OCR
+    if ocr_backend is not None and region_image and not counter:
+        try:
+            ocr_lines = ocr_backend.recognize(region_image)
+        except Exception:  # noqa: BLE001 - OCR 不应阻塞主流程
+            ocr_lines = []
+        for line in ocr_lines:
+            models = _find_models_in_text(line.text, known_models)
+            qty = _extract_quantity(line.text) or 0
+            for m in models:
+                canonical = catalog.canonicalize(m)
+                counter[canonical] += 1
+                if qty:
+                    qty_overrides[canonical] = max(qty_overrides.get(canonical, 0), qty)
+                if line.text:
+                    notes.setdefault(canonical, []).append(f"[OCR] {line.text.strip()}")
+
     items: List[EquipmentItem] = []
     for model, count in counter.items():
         product = catalog.get(model)
@@ -128,12 +153,27 @@ def extract_from_regions(
     document: CadDocument,
     regions: Iterable[Tuple[str, BBox]],
     catalog: ProductCatalog,
+    ocr_backend: Optional[OCRBackend] = None,
+    region_images: Optional[Dict[str, str]] = None,
 ) -> List[EquipmentItem]:
-    """对多个 ``(name, bbox)`` 区域批量识别。"""
+    """对多个 ``(name, bbox)`` 区域批量识别。
+
+    :param region_images: 区域名 → 已渲染 PNG 路径，启用 OCR 兜底时使用。
+    """
 
     out: List[EquipmentItem] = []
+    region_images = region_images or {}
     for name, bbox in regions:
-        out.extend(extract_from_region(document, bbox, name, catalog))
+        out.extend(
+            extract_from_region(
+                document,
+                bbox,
+                name,
+                catalog,
+                ocr_backend=ocr_backend,
+                region_image=region_images.get(name),
+            )
+        )
     return out
 
 

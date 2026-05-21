@@ -12,6 +12,7 @@ from typing import List, Optional
 
 try:
     from fastapi import FastAPI, File, Form, HTTPException, UploadFile  # type: ignore
+    from fastapi.middleware.cors import CORSMiddleware  # type: ignore
     from fastapi.responses import FileResponse, JSONResponse  # type: ignore
     from pydantic import BaseModel  # type: ignore
 except ImportError as exc:  # pragma: no cover
@@ -19,15 +20,25 @@ except ImportError as exc:  # pragma: no cover
         "fastapi 未安装；请 `pip install fastapi uvicorn python-multipart`。"
     ) from exc
 
+from ..cad.auto_regions import detect_regions
 from ..cad.parser import parse_dxf
 from ..catalog.catalog import ProductCatalog
+from ..ocr.backends import make_backend
 from ..ocr.extractor import extract_from_regions
 from ..quote.engine import build_quote
 from ..quote.exporter import to_excel, quote_to_rows
 from ..quote.strategies import available_strategies, create_strategy
+from .admin import get_store, router as admin_router
 
 
-app = FastAPI(title="CAD 图纸解析与报价清单生成", version="0.1.0")
+app = FastAPI(title="CAD 图纸解析与报价清单生成", version="0.2.0")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+app.include_router(admin_router)
 
 
 class Region(BaseModel):
@@ -39,16 +50,24 @@ class QuoteRequest(BaseModel):
     regions: List[Region]
     strategy: str = "standard"
     strategy_params: dict = {}
+    ocr_backend: Optional[str] = None
+    ocr_params: dict = {}
 
 
-_CATALOG: Optional[ProductCatalog] = None
+_DEFAULT_CATALOG: Optional[ProductCatalog] = None
 
 
 def get_catalog() -> ProductCatalog:
-    global _CATALOG
-    if _CATALOG is None:
-        _CATALOG = ProductCatalog.default()
-    return _CATALOG
+    """优先使用用户管理的型号库（CatalogStore）；为空时退化到内置默认库。"""
+
+    store = get_store()
+    cat = store.catalog()
+    if len(cat) > 0:
+        return cat
+    global _DEFAULT_CATALOG
+    if _DEFAULT_CATALOG is None:
+        _DEFAULT_CATALOG = ProductCatalog.default()
+    return _DEFAULT_CATALOG
 
 
 @app.get("/healthz")
@@ -102,7 +121,32 @@ async def quote_endpoint(
 
     catalog = get_catalog()
     regions = [(r.name, tuple(r.bbox)) for r in body.regions]
-    items = extract_from_regions(document, regions, catalog)
+
+    ocr_backend = None
+    region_images: Optional[dict] = None
+    if body.ocr_backend:
+        try:
+            ocr_backend = make_backend(body.ocr_backend, **(body.ocr_params or {}))
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=400, detail=f"OCR 后端构造失败: {exc}")
+        # 渲染区域 PNG 供 OCR 使用（依赖 ezdxf + matplotlib，失败时跳过）
+        try:
+            from ..cad.renderer import render_regions
+
+            tmp_dir = tempfile.mkdtemp(prefix="ocr_regions_")
+            paths = render_regions(
+                tmp_path, [tuple(r.bbox) for r in body.regions], tmp_dir
+            )
+            region_images = {
+                body.regions[i].name: paths[i]
+                for i in range(min(len(paths), len(body.regions)))
+            }
+        except Exception:  # noqa: BLE001
+            region_images = None
+
+    items = extract_from_regions(
+        document, regions, catalog, ocr_backend=ocr_backend, region_images=region_images
+    )
 
     try:
         strategy = create_strategy(body.strategy, **body.strategy_params)
@@ -159,3 +203,87 @@ async def quote_excel(
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         filename="quote.xlsx",
     )
+
+
+@app.post("/auto-regions")
+async def auto_regions(
+    file: UploadFile = File(..., description="DXF 文件"),
+    prefer: str = Form("auto", description="rectangle / layer / auto"),
+):
+    """根据 DXF 自动识别候选区域。"""
+
+    suffix = os.path.splitext(file.filename or "")[1].lower() or ".dxf"
+    if suffix != ".dxf":
+        raise HTTPException(status_code=400, detail="仅支持 .dxf 文件。")
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+        tmp.write(await file.read())
+        tmp_path = tmp.name
+    try:
+        document = parse_dxf(tmp_path)
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
+    regions = detect_regions(document, prefer=prefer)
+    return {
+        "extents": list(document.extents) if document.extents else None,
+        "regions": [
+            {"name": name, "bbox": list(bbox)} for name, bbox in regions
+        ],
+    }
+
+
+@app.post("/preview")
+async def preview(
+    file: UploadFile = File(..., description="DXF 文件"),
+    dpi: int = Form(120),
+):
+    """渲染整张 DXF 为 PNG 用于前端预览。
+
+    返回 ``{"image": "/preview/<token>.png", "extents": [xmin, ymin, xmax, ymax],
+    "size": [w, h]}``。前端可基于 ``extents`` 把像素 bbox 反算回 DXF 坐标。
+    """
+
+    suffix = os.path.splitext(file.filename or "")[1].lower() or ".dxf"
+    if suffix != ".dxf":
+        raise HTTPException(status_code=400, detail="仅支持 .dxf 文件。")
+
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+        tmp.write(await file.read())
+        dxf_path = tmp.name
+
+    try:
+        document = parse_dxf(dxf_path)
+        # 选取整张图作为 bbox：优先使用 EXTMIN/EXTMAX，缺失时用文档 bbox
+        from ..cad.auto_regions import _document_bbox  # 内部工具
+        from ..cad.renderer import render_regions
+
+        bbox = document.extents or _document_bbox(document)
+        if bbox is None:
+            raise HTTPException(status_code=400, detail="DXF 中没有可渲染的实体。")
+        out_dir = tempfile.mkdtemp(prefix="preview_")
+        paths = render_regions(dxf_path, [bbox], out_dir, dpi=dpi)
+        if not paths:
+            raise HTTPException(status_code=500, detail="渲染失败。")
+        try:
+            from PIL import Image  # type: ignore
+
+            with Image.open(paths[0]) as im:
+                size = [im.width, im.height]
+        except Exception:
+            size = [0, 0]
+        return FileResponse(
+            paths[0],
+            media_type="image/png",
+            headers={
+                "X-Cad-Extents": ",".join(str(v) for v in bbox),
+                "X-Cad-Size": ",".join(str(v) for v in size),
+            },
+        )
+    finally:
+        try:
+            os.unlink(dxf_path)
+        except OSError:
+            pass

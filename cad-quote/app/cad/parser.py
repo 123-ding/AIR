@@ -44,11 +44,28 @@ class CadInsert:
 
 
 @dataclass
+class CadPolyline:
+    """一段折线 / 多段线，顶点为 ``(x, y)`` 列表。"""
+
+    vertices: List[Tuple[float, float]] = field(default_factory=list)
+    layer: str = "0"
+    closed: bool = False
+
+    def bbox(self) -> Optional[BBox]:
+        if not self.vertices:
+            return None
+        xs = [v[0] for v in self.vertices]
+        ys = [v[1] for v in self.vertices]
+        return (min(xs), min(ys), max(xs), max(ys))
+
+
+@dataclass
 class CadDocument:
     """已解析的 CAD 图纸内容。"""
 
     texts: List[CadText] = field(default_factory=list)
     inserts: List[CadInsert] = field(default_factory=list)
+    polylines: List[CadPolyline] = field(default_factory=list)
     extents: Optional[BBox] = None
 
     # ---- 查询便捷方法 ----
@@ -77,6 +94,7 @@ def parse_dxf(path: str) -> CadDocument:
 
     texts: List[CadText] = []
     inserts: List[CadInsert] = []
+    polylines: List[CadPolyline] = []
 
     for entity in msp:
         dxftype = entity.dxftype()
@@ -120,6 +138,30 @@ def parse_dxf(path: str) -> CadDocument:
                     attribs=attribs,
                 )
             )
+        elif dxftype in ("LWPOLYLINE", "POLYLINE"):
+            verts: List[Tuple[float, float]] = []
+            try:
+                if dxftype == "LWPOLYLINE":
+                    for pt in entity.get_points("xy"):  # type: ignore[attr-defined]
+                        verts.append((float(pt[0]), float(pt[1])))
+                else:
+                    for v in entity.vertices:  # type: ignore[attr-defined]
+                        loc = v.dxf.location
+                        verts.append((float(loc[0]), float(loc[1])))
+            except Exception:
+                verts = []
+            try:
+                closed = bool(entity.closed)  # type: ignore[attr-defined]
+            except Exception:
+                closed = False
+            if verts:
+                polylines.append(
+                    CadPolyline(
+                        vertices=verts,
+                        layer=str(entity.dxf.layer),
+                        closed=closed,
+                    )
+                )
 
     extents: Optional[BBox] = None
     try:
@@ -131,7 +173,9 @@ def parse_dxf(path: str) -> CadDocument:
     except Exception:
         extents = None
 
-    return CadDocument(texts=texts, inserts=inserts, extents=extents)
+    return CadDocument(
+        texts=texts, inserts=inserts, polylines=polylines, extents=extents
+    )
 
 
 def filter_by_bboxes(
