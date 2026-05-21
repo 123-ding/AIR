@@ -1,0 +1,15 @@
+# Core
+ezdxf>=1.1.0
+matplotlib>=3.7
+Pillow>=10.2.0
+pandas>=2.0
+openpyxl>=3.1
+PyYAML>=6.0
+
+# API
+fastapi>=0.110
+uvicorn>=0.27
+python-multipart>=0.0.27
+
+# Test
+pytest>=7.4
