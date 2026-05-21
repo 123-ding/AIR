@@ -36,6 +36,27 @@ pip install -r requirements.txt
 > 💡 仅运行**报价策略 + 型号库 + 导出**不需要 `ezdxf / matplotlib`；
 > 解析真实 DXF 与渲染拼图才需要它们。所有依赖均按需懒加载。
 
+### P1 增量
+
+```
+cad-quote/
+├── app/
+│   ├── api/admin.py        # 型号库 REST 后台（CRUD + 调价 + 历史）
+│   ├── catalog/store.py    # 可写型号库 + JSONL 价格历史
+│   ├── cad/auto_regions.py # 矩形多段线 + 图层关键词 自动框选
+│   └── ocr/backends.py     # OCRBackend / StubOCRBackend / PaddleOCRBackend
+└── frontend/               # Vue3 + Element Plus 前端
+    ├── src/views/QuoteView.vue
+    ├── src/views/CatalogView.vue
+    └── src/components/RegionSelector.vue
+```
+
+启动前端见 [`frontend/README.md`](frontend/README.md)。OCR 兜底可选安装：
+
+```bash
+pip install paddleocr  # 仅在需要 OCR 时
+```
+
 ## 🧰 命令行用法
 
 ```bash

@@ -62,6 +62,13 @@ def _build_argparser() -> argparse.ArgumentParser:
 
     sub.add_parser("strategies", help="列出所有可用报价策略")
     sub.add_parser("catalog", help="列出默认型号库的所有型号")
+
+    p_auto = sub.add_parser("auto-regions", help="自动识别 DXF 中的候选区域")
+    p_auto.add_argument("--dxf", required=True, help="DXF 文件路径")
+    p_auto.add_argument(
+        "--prefer", default="auto", choices=["auto", "rectangle", "layer"]
+    )
+    p_auto.add_argument("--out", default=None, help="把结果写入此 JSON 文件，省略则打印到 stdout")
     return parser
 
 
@@ -77,6 +84,22 @@ def main(argv: List[str] | None = None) -> int:
         cat = ProductCatalog.default()
         for m in cat.models():
             print(m)
+        return 0
+
+    if args.cmd == "auto-regions":
+        from .cad.auto_regions import detect_regions
+
+        document = parse_dxf(args.dxf)
+        regions = detect_regions(document, prefer=args.prefer)
+        payload = [{"name": name, "bbox": list(bbox)} for name, bbox in regions]
+        text = json.dumps(payload, ensure_ascii=False, indent=2)
+        if args.out:
+            os.makedirs(os.path.dirname(os.path.abspath(args.out)) or ".", exist_ok=True)
+            with open(args.out, "w", encoding="utf-8") as f:
+                f.write(text)
+            print(f"已写入 {len(payload)} 个区域到 {args.out}")
+        else:
+            print(text)
         return 0
 
     if args.cmd == "quote":

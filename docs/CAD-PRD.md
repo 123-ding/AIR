@@ -32,7 +32,7 @@
 
 ## 4. 范围
 
-### P0（本期 MVP，已实现）
+### P0（已实现）
 - DXF 文件解析，提取 TEXT/MTEXT/INSERT 实体
 - 按"矩形坐标列表"裁剪渲染各区域 → PNG，按网格拼图
 - 基于 DXF 文本 + 内置型号库的**型号识别与参数表生成**
@@ -40,11 +40,11 @@
 - YAML 型号库 + Excel 报价单导出
 - FastAPI HTTP 接口 + CLI 命令行
 
-### P1（后续）
-- 前端框选 UI（Vue + DXF 预览）
-- OCR 兜底（PaddleOCR）识别非文本实体内的型号
-- 自动区域识别（按图层/图框/标题栏切片）
-- 型号库管理后台 + 价格历史版本
+### P1（已实现）
+- **前端框选 UI**（Vue3 + Element Plus + Vite）：DXF 上传 / 实时预览 / 画布框选 / 报价 / Excel 导出 / 型号库管理（位于 `cad-quote/frontend/`）
+- **OCR 兜底**：可插拔 OCR 后端（`StubOCRBackend` + `PaddleOCRBackend` 懒加载），仅在 TEXT/INSERT 都未命中型号时调用
+- **自动区域识别**：闭合矩形多段线 + 图层关键词聚合（`AREA-*` / `ZONE-*` / `区` / `分区`）+ 标题栏过滤 + 重叠去重
+- **型号库管理后台 + 价格历史版本**：`CatalogStore` 持久化（YAML）+ JSONL 价格历史 + REST CRUD `/admin/catalog/...`
 
 ### P2
 - DWG 原生支持（ODA File Converter / LibreDWG）

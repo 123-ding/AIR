@@ -41,6 +41,23 @@ app.add_middleware(
 app.include_router(admin_router)
 
 
+# 如果前端已构建（cad-quote/frontend/dist），就把它挂在 / 上提供静态服务，
+# 实现「单进程交付」。前端没构建时，用户访问 / 会得到 API 的健康状态而非 404。
+def _mount_frontend() -> None:
+    here = os.path.dirname(os.path.abspath(__file__))
+    dist = os.path.normpath(os.path.join(here, "..", "..", "frontend", "dist"))
+    if not os.path.isdir(dist):
+        return
+    try:
+        from fastapi.staticfiles import StaticFiles  # type: ignore
+    except ImportError:  # pragma: no cover
+        return
+    app.mount("/ui", StaticFiles(directory=dist, html=True), name="frontend")
+
+
+_mount_frontend()
+
+
 class Region(BaseModel):
     name: str
     bbox: List[float]  # [xmin, ymin, xmax, ymax]
