@@ -1,0 +1,51 @@
+# 内置示例型号库（通用样例，用户可替换为行业专用库）
+products:
+  - model: ABC-100
+    brand: ACME
+    unit: 台
+    base_price: 1280.00
+    aliases: [ABC100, ABC_100]
+    params:
+      power: 1.5kW
+      voltage: 220V
+      ip: IP54
+
+  - model: ABC-200
+    brand: ACME
+    unit: 台
+    base_price: 2380.00
+    aliases: [ABC200]
+    params:
+      power: 3.0kW
+      voltage: 380V
+      ip: IP55
+
+  - model: XYZ-DN50
+    brand: NovaFlow
+    unit: 件
+    base_price: 320.00
+    aliases: [XYZDN50, XYZ_DN50]
+    params:
+      diameter: DN50
+      pressure: 1.6MPa
+      material: 不锈钢
+
+  - model: XYZ-DN100
+    brand: NovaFlow
+    unit: 件
+    base_price: 560.00
+    aliases: [XYZDN100]
+    params:
+      diameter: DN100
+      pressure: 1.6MPa
+      material: 不锈钢
+
+  - model: LED-T8-18W
+    brand: BrightCo
+    unit: 支
+    base_price: 38.00
+    aliases: [LEDT818W, T8-18W]
+    params:
+      power: 18W
+      length: 1200mm
+      color_temp: 6500K
