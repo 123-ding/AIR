@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import os
+import secrets
 import tempfile
 from typing import List, Optional
 
@@ -21,6 +22,7 @@ except ImportError as exc:  # pragma: no cover
     ) from exc
 
 from ..cad.auto_regions import detect_regions
+from ..cad.mxcad import MxCadConversionError, convert_to_mxweb
 from ..cad.parser import parse_cad
 from ..catalog.catalog import ProductCatalog
 from ..ocr.backends import make_backend
@@ -78,6 +80,8 @@ class QuoteRequest(BaseModel):
 
 
 _DEFAULT_CATALOG: Optional[ProductCatalog] = None
+_MXCAD_FILE_DIR = tempfile.mkdtemp(prefix="mxcad_files_")
+_MXCAD_FILES = {}
 
 
 def get_catalog() -> ProductCatalog:
@@ -301,6 +305,72 @@ def list_customers():
             for p in (registry.profiles[k] for k in registry.list_levels())
         ]
     }
+
+
+@app.post("/mxcad/open")
+async def mxcad_open(
+    file: UploadFile = File(..., description="DXF / DWG / MXWEB 文件"),
+    prefer: str = Form("auto", description="rectangle / layer / auto"),
+):
+    """上传 CAD 文件，转换/发布为 mxcad 可在线打开的 mxweb URL。"""
+
+    suffix = os.path.splitext(file.filename or "")[1].lower()
+    if suffix not in (".dxf", ".dwg", ".mxweb"):
+        raise HTTPException(status_code=400, detail="仅支持 .dxf / .dwg / .mxweb 文件。")
+
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+        tmp.write(await file.read())
+        src_path = tmp.name
+
+    try:
+        mxweb_path = src_path
+        if suffix != ".mxweb":
+            try:
+                mxweb_path = convert_to_mxweb(
+                    src_path,
+                    out_dir=_MXCAD_FILE_DIR,
+                    out_name=secrets.token_urlsafe(12),
+                )
+            except MxCadConversionError as exc:
+                raise HTTPException(status_code=503, detail=str(exc))
+
+        document = None
+        regions = []
+        if suffix in (".dxf", ".dwg"):
+            try:
+                document = parse_cad(src_path)
+                regions = detect_regions(document, prefer=prefer)
+            except Exception as exc:  # noqa: BLE001
+                raise HTTPException(status_code=400, detail=f"CAD 自动框选失败: {exc}")
+
+        token = secrets.token_urlsafe(18)
+        _MXCAD_FILES[token] = mxweb_path
+        return {
+            "file_url": f"/mxcad/files/{token}",
+            "extents": list(document.extents) if document and document.extents else None,
+            "regions": [{"name": name, "bbox": list(bbox)} for name, bbox in regions],
+        }
+    finally:
+        if suffix == ".mxweb":
+            # mxweb 文件需要继续提供给前端打开，不能立即删除。
+            pass
+        else:
+            try:
+                os.unlink(src_path)
+            except OSError:
+                pass
+
+
+@app.get("/mxcad/files/{token}")
+def mxcad_file(token: str):
+    path = _MXCAD_FILES.get(token)
+    if not path or not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail="mxweb 文件不存在或已过期。")
+    return FileResponse(
+        path,
+        media_type="application/octet-stream",
+        filename=os.path.basename(path),
+    )
 
 
 @app.post("/auto-regions")

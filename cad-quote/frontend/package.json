@@ -12,6 +12,7 @@
   "dependencies": {
     "axios": "^1.15.2",
     "element-plus": "^2.7.0",
+    "mxcad": "^1.0.382",
     "vue": "^3.4.21"
   },
   "devDependencies": {
