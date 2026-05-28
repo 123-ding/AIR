@@ -20,6 +20,24 @@ export async function autoRegions(file, prefer = 'auto') {
   return data
 }
 
+function withApiBase(path) {
+  if (/^https?:\/\//i.test(path)) return path
+  const normalizedBase = baseURL.replace(/\/$/, '')
+  const normalizedPath = path.startsWith('/') ? path : `/${path}`
+  return `${normalizedBase}${normalizedPath}`
+}
+
+export async function openMxCadFile(file, prefer = 'auto') {
+  const fd = new FormData()
+  fd.append('file', file)
+  fd.append('prefer', prefer)
+  const { data } = await http.post('/mxcad/open', fd)
+  return {
+    ...data,
+    fileUrl: withApiBase(data.file_url),
+  }
+}
+
 export async function fetchPreview(file, dpi = 120) {
   const fd = new FormData()
   fd.append('file', file)

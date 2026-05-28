@@ -41,6 +41,16 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def cross_origin_isolation_headers(request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("Cross-Origin-Opener-Policy", "same-origin")
+    response.headers.setdefault("Cross-Origin-Embedder-Policy", "require-corp")
+    return response
+
+
 app.include_router(admin_router)
 
 

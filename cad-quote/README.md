@@ -8,6 +8,7 @@
 1. 解析 CAD 图纸（DXF），按用户指定的多个矩形区域裁剪，拼成一张总图。
 2. 从每个区域内识别**设备型号 / 规格 / 数量**，输出结构化清单。
 3. 支持多种**报价策略**（标准 / 折扣 / 阶梯 / 打包），输出 Excel 报价单。
+4. 前端可通过 **mxcad** 在线打开 `.mxweb` 图纸，并在 CAD 画布上自动/手工框选区域。
 
 ## 📦 目录结构
 
@@ -77,6 +78,8 @@ pip install openai      # 启用 OpenAILLMBackend
 # DWG 转换器二选一：
 #   ODA File Converter:  https://www.opendesign.com/guestfiles/oda_file_converter
 #   LibreDWG (dwg2dxf):  https://www.gnu.org/software/libredwg/
+# mxcad 在线预览 DXF/DWG 需安装 MxDraw CloudDraw 的 mxcadassembly，
+# 并加入 PATH 或设置 MXCAD_ASSEMBLY=/path/to/mxcadassembly。
 ```
 
 新接口示例：

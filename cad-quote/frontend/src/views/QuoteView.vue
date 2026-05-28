@@ -4,7 +4,7 @@
       <el-card class="full-card">
         <template #header>
           <div class="card-head">
-            <span>1️⃣ 上传 DXF + 框选区域</span>
+            <span>1️⃣ 上传 CAD + mxcad 在线框选</span>
             <el-tag v-if="extents" type="info" size="small">
               图纸坐标：{{ extents.map(v => v.toFixed(1)).join(', ') }}
             </el-tag>
@@ -14,27 +14,28 @@
           <el-upload
             :auto-upload="false"
             :show-file-list="false"
-            accept=".dxf"
+            accept=".dxf,.dwg,.mxweb"
             :on-change="onFileChange"
           >
-            <el-button type="primary">📂 选择 DXF 文件</el-button>
+            <el-button type="primary">📂 选择 CAD 文件</el-button>
           </el-upload>
           <span v-if="file" class="filename">{{ file.name }}</span>
-          <el-button :disabled="!file" :loading="autoLoading" @click="onAutoDetect">
+          <el-button :disabled="!file || !quoteSupported" :loading="autoLoading" @click="onAutoDetect">
             🪄 自动识别区域
           </el-button>
         </div>
 
         <div class="canvas-area">
-          <RegionSelector
-            v-if="previewUrl"
-            :image-url="previewUrl"
-            :extents="extents"
+          <MxCadRegionSelector
+            v-if="file"
+            :file="file"
             :regions="regions"
             @add="addRegion"
             @clear="regions = []"
+            @loaded="onMxCadLoaded"
+            @error="onMxCadError"
           />
-          <el-empty v-else description="尚未上传 DXF" />
+          <el-empty v-else description="尚未上传 CAD" />
         </div>
       </el-card>
     </el-col>
@@ -86,14 +87,14 @@
         <div class="action-row">
           <el-button
             type="primary"
-            :disabled="!file || regions.length === 0"
+            :disabled="!file || !quoteSupported || regions.length === 0"
             :loading="quoteLoading"
             @click="onQuote"
           >
             ⚡ 生成报价
           </el-button>
           <el-button
-            :disabled="!file || regions.length === 0"
+            :disabled="!file || !quoteSupported || regions.length === 0"
             :loading="excelLoading"
             @click="onDownloadExcel"
           >
@@ -127,19 +128,17 @@
 </template>
 
 <script setup>
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import RegionSelector from '../components/RegionSelector.vue'
+import MxCadRegionSelector from '../components/MxCadRegionSelector.vue'
 import {
   autoRegions,
   downloadQuoteExcel,
-  fetchPreview,
   fetchStrategies,
   postQuote,
 } from '../api.js'
 
 const file = ref(null)
-const previewUrl = ref(null)
 const extents = ref(null)
 const regions = ref([])
 
@@ -152,6 +151,10 @@ const quote = ref(null)
 const autoLoading = ref(false)
 const quoteLoading = ref(false)
 const excelLoading = ref(false)
+const quoteSupported = computed(() => {
+  const name = file.value?.name || ''
+  return /\.(dxf|dwg)$/i.test(name)
+})
 
 onMounted(async () => {
   try {
@@ -166,17 +169,24 @@ async function onFileChange(uploadFile) {
   file.value = raw
   regions.value = []
   quote.value = null
-  if (previewUrl.value) {
-    URL.revokeObjectURL(previewUrl.value)
-    previewUrl.value = null
+  extents.value = null
+  if (!quoteSupported.value) {
+    ElMessage.warning('mxweb 可在线预览；报价和自动框选仍需上传 DXF/DWG 原图。')
   }
-  try {
-    const result = await fetchPreview(raw)
-    previewUrl.value = result.objectUrl
-    extents.value = result.extents
-  } catch (e) {
-    ElMessage.error('预览失败，请确认是合法 DXF 且后端已安装 ezdxf+matplotlib。')
+}
+
+function onMxCadLoaded(data) {
+  if (data.extents) extents.value = data.extents
+  if (data.regions?.length) {
+    regions.value = data.regions.map((r, i) => ({
+      name: r.name || `区域${i + 1}`,
+      bbox: r.bbox,
+    }))
   }
+}
+
+function onMxCadError(detail) {
+  ElMessage.error(detail)
 }
 
 function addRegion(bbox) {
