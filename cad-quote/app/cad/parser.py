@@ -182,8 +182,11 @@ def parse_dxf(path: str) -> CadDocument:
 def parse_cad(path: str, **dwg_kwargs) -> CadDocument:
     """解析 CAD 文件：``.dxf`` 直接走 :func:`parse_dxf`；``.dwg`` 先转换再解析。
 
-    :param dwg_kwargs: 透传给 :func:`app.cad.dwg.convert_dwg_to_dxf`，例如
-        ``runner=...`` / ``converter=...``，便于测试注入。
+    DWG 通过 :func:`app.cad.dwg.resolve_to_dxf` 转换，且按文件指纹缓存——
+    同一份 DWG 在一个进程内只调用一次 ODA/LibreDWG，后续解析与预览全程走 ezdxf。
+
+    :param dwg_kwargs: 透传给 :func:`app.cad.dwg.resolve_to_dxf`，例如
+        ``runner=...`` / ``converter=...`` / ``use_cache=...``，便于测试注入。
     :raises ValueError: 不识别的扩展名。
     """
 
@@ -191,9 +194,9 @@ def parse_cad(path: str, **dwg_kwargs) -> CadDocument:
     if ext == ".dxf":
         return parse_dxf(path)
     if ext == ".dwg":
-        from .dwg import convert_dwg_to_dxf
+        from .dwg import resolve_to_dxf
 
-        dxf_path = convert_dwg_to_dxf(path, **dwg_kwargs)
+        dxf_path = resolve_to_dxf(path, **dwg_kwargs)
         return parse_dxf(dxf_path)
     raise ValueError(f"不支持的 CAD 文件扩展名：{ext!r}（仅支持 .dxf / .dwg）")
 

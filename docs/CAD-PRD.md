@@ -55,12 +55,20 @@
   - `to_pdf()` 通过 reportlab 渲染中英混排 PDF（自动注册系统中可用的 CJK 字体）
   - 对应 REST：`/quote/pdf`、`/customers`，`/quote` 新增 `customer_level`/`currency`/`exchange_rate`/`llm_backend` 字段
 
+### P3（已实现）
+- **数据提取与渲染预览完全分离**，解决原方案「不清晰 + 慢」：
+  - 报价所需数据（Block 名称、属性、文字）由 `app/cad/parser.py` 直接从矢量实体读取，**不依赖任何图片渲染**
+  - 图纸预览改用 **SVG 矢量导出**（`app/cad/svg_export.py`，基于 ezdxf SVG 后端）：清晰、可无限缩放、保留线宽/图层色，无需栅格化
+  - **DWG 只转换一次**：`app/cad/dwg.py` 的 `resolve_to_dxf()` 按文件指纹缓存，同一份 DWG 在解析与预览间只调用一次 ODA/LibreDWG，后续全程走 ezdxf（速度与精度最优）
+  - 对应入口：CLI `preview` 子命令；REST `POST /preview`（返回 `image/svg+xml`，响应头 `X-Cad-Extents` 给出 DXF 坐标范围）
+
 ## 5. 关键模块
 
 | 模块 | 路径 | 职责 |
 |------|------|------|
 | CAD 解析 | `cad-quote/app/cad/parser.py` | 读取 DXF，提取实体、文本、块引用 |
-| 区域渲染 | `cad-quote/app/cad/renderer.py` | 按 bbox 渲染为 PNG |
+| 区域渲染 | `cad-quote/app/cad/renderer.py` | 按 bbox 渲染为 PNG（仅 OCR 兜底用） |
+| SVG 预览 | `cad-quote/app/cad/svg_export.py` | DXF/DWG → SVG 矢量预览（与数据提取解耦） |
 | 拼图 | `cad-quote/app/cad/compositor.py` | PIL 网格拼接 |
 | 型号提取 | `cad-quote/app/ocr/extractor.py` | 从 DXF 文本/块名识别型号 |
 | 型号库 | `cad-quote/app/catalog/catalog.py` | 加载 YAML 型号 + 价格 |

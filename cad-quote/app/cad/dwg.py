@@ -15,6 +15,8 @@ P2 目标：让 ``parse_cad(path)`` 能直接接收 ``.dwg``，在解析前先�
 * :func:`find_converter` — 探测转换器，返回 ``("oda" | "libredwg", executable_path)`` 或 ``None``。
 * :func:`convert_dwg_to_dxf(src, out_dir, *, converter=None, runner=None)` — 实际转换。
   ``runner`` 是可注入的 ``subprocess.run`` 替代品，便于单测 mock。
+* :func:`resolve_to_dxf(path, *, use_cache=True, **convert_kwargs)` — 归一为 DXF 路径，
+  DWG 按文件指纹缓存「只转换一次」，解析与 SVG 预览复用同一份 DXF。
 """
 
 from __future__ import annotations
@@ -23,7 +25,7 @@ import os
 import shutil
 import subprocess
 import tempfile
-from typing import Callable, Optional, Tuple
+from typing import Callable, Dict, Optional, Tuple
 
 # 可注入的 subprocess 调用：(cmd: list[str]) -> CompletedProcess
 SubprocessRunner = Callable[..., "subprocess.CompletedProcess"]
@@ -31,6 +33,22 @@ SubprocessRunner = Callable[..., "subprocess.CompletedProcess"]
 
 class DWGConversionError(RuntimeError):
     """DWG → DXF 转换失败。"""
+
+
+# 进程内「转换一次」缓存：key = (abspath, mtime_ns, size) → 已生成的 DXF 路径。
+# 同一份 DWG 在解析与 SVG 预览之间只需调用一次 ODA/LibreDWG，后续全程走 ezdxf。
+_CONVERSION_CACHE: Dict[Tuple[str, int, int], str] = {}
+
+
+def _cache_key(path: str) -> Tuple[str, int, int]:
+    st = os.stat(path)
+    return (os.path.abspath(path), st.st_mtime_ns, st.st_size)
+
+
+def clear_conversion_cache() -> None:
+    """清空 DWG→DXF 转换缓存（主要用于测试）。"""
+
+    _CONVERSION_CACHE.clear()
 
 
 _ODA_CANDIDATES = (
@@ -168,3 +186,43 @@ def _run_converter(runner: SubprocessRunner, cmd, timeout: int) -> None:
         raise DWGConversionError(
             f"DWG 转换失败（returncode={result.returncode}）：{stderr.strip()}"
         )
+
+
+def resolve_to_dxf(
+    path: str,
+    *,
+    use_cache: bool = True,
+    **convert_kwargs,
+) -> str:
+    """把任意 CAD 输入归一为 DXF 路径，DWG 只转换一次。
+
+    * ``.dxf`` 直接返回原路径（无需转换）。
+    * ``.dwg`` 调用 :func:`convert_dwg_to_dxf` 转换；结果按文件指纹缓存，
+      同一份 DWG 在一个进程内（解析 + SVG 预览等）只转换一次，后续全程走 ezdxf。
+
+    :param use_cache: 是否启用进程内转换缓存（测试可关闭）。
+    :param convert_kwargs: 透传给 :func:`convert_dwg_to_dxf`（如 ``converter`` / ``runner``）。
+    :raises ValueError: 不支持的扩展名。
+    """
+
+    ext = os.path.splitext(path)[1].lower()
+    if ext == ".dxf":
+        return path
+    if ext != ".dwg":
+        raise ValueError(f"不支持的 CAD 文件扩展名：{ext!r}（仅支持 .dxf / .dwg）")
+
+    if not use_cache:
+        return convert_dwg_to_dxf(path, **convert_kwargs)
+
+    try:
+        key = _cache_key(path)
+    except OSError:
+        return convert_dwg_to_dxf(path, **convert_kwargs)
+
+    cached = _CONVERSION_CACHE.get(key)
+    if cached and os.path.isfile(cached):
+        return cached
+
+    dxf_path = convert_dwg_to_dxf(path, **convert_kwargs)
+    _CONVERSION_CACHE[key] = dxf_path
+    return dxf_path

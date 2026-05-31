@@ -13,7 +13,7 @@ from typing import List, Optional
 try:
     from fastapi import FastAPI, File, Form, HTTPException, UploadFile  # type: ignore
     from fastapi.middleware.cors import CORSMiddleware  # type: ignore
-    from fastapi.responses import FileResponse, JSONResponse  # type: ignore
+    from fastapi.responses import FileResponse, JSONResponse, Response  # type: ignore
     from pydantic import BaseModel  # type: ignore
 except ImportError as exc:  # pragma: no cover
     raise ImportError(
@@ -335,13 +335,14 @@ async def auto_regions(
 
 @app.post("/preview")
 async def preview(
-    file: UploadFile = File(..., description="DXF 文件"),
-    dpi: int = Form(120),
+    file: UploadFile = File(..., description="DXF / DWG 文件"),
 ):
-    """渲染整张 DXF 为 PNG 用于前端预览。
+    """导出整张图纸为 **SVG 矢量预览**（清晰、快、与数据提取解耦）。
 
-    返回 ``{"image": "/preview/<token>.png", "extents": [xmin, ymin, xmax, ymax],
-    "size": [w, h]}``。前端可基于 ``extents`` 把像素 bbox 反算回 DXF 坐标。
+    返回 ``image/svg+xml``，并在响应头携带 ``X-Cad-Extents``（DXF 坐标范围），
+    前端可据此把像素 bbox 反算回 DXF 坐标用于框选。
+
+    与报价数据提取完全分离：报价所需数据由矢量实体直接读取，预览仅用于人工查看。
     """
 
     suffix = os.path.splitext(file.filename or "")[1].lower() or ".dxf"
@@ -353,32 +354,24 @@ async def preview(
         dxf_path = tmp.name
 
     try:
+        # DWG 在此只转换一次（缓存），解析与 SVG 预览复用同一份 DXF。
         document = parse_cad(dxf_path)
-        # 选取整张图作为 bbox：优先使用 EXTMIN/EXTMAX，缺失时用文档 bbox
         from ..cad.auto_regions import _document_bbox  # 内部工具
-        from ..cad.renderer import render_regions
+        from ..cad.svg_export import render_svg
 
-        bbox = document.extents or _document_bbox(document)
-        if bbox is None:
-            raise HTTPException(status_code=400, detail="DXF 中没有可渲染的实体。")
-        out_dir = tempfile.mkdtemp(prefix="preview_")
-        paths = render_regions(dxf_path, [bbox], out_dir, dpi=dpi)
-        if not paths:
-            raise HTTPException(status_code=500, detail="渲染失败。")
+        bbox = _document_bbox(document)
         try:
-            from PIL import Image  # type: ignore
+            svg = render_svg(dxf_path, bbox=bbox)
+        except ImportError as exc:
+            raise HTTPException(status_code=503, detail=str(exc))
 
-            with Image.open(paths[0]) as im:
-                size = [im.width, im.height]
-        except Exception:
-            size = [0, 0]
-        return FileResponse(
-            paths[0],
-            media_type="image/png",
-            headers={
-                "X-Cad-Extents": ",".join(str(v) for v in bbox),
-                "X-Cad-Size": ",".join(str(v) for v in size),
-            },
+        headers = {}
+        if bbox is not None:
+            headers["X-Cad-Extents"] = ",".join(str(v) for v in bbox)
+        return Response(
+            content=svg,
+            media_type="image/svg+xml",
+            headers=headers,
         )
     finally:
         try:

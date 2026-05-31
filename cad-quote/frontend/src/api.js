@@ -20,20 +20,18 @@ export async function autoRegions(file, prefer = 'auto') {
   return data
 }
 
-export async function fetchPreview(file, dpi = 120) {
+export async function fetchPreview(file) {
   const fd = new FormData()
   fd.append('file', file)
-  fd.append('dpi', String(dpi))
+  // 后端返回 SVG 矢量预览（image/svg+xml）：清晰、可无限缩放、体积小。
   const res = await http.post('/preview', fd, { responseType: 'blob' })
   const extentsHeader = res.headers['x-cad-extents']
-  const sizeHeader = res.headers['x-cad-size']
   const extents = extentsHeader ? extentsHeader.split(',').map(Number) : null
-  const size = sizeHeader ? sizeHeader.split(',').map(Number) : null
   return {
     blob: res.data,
     objectUrl: URL.createObjectURL(res.data),
     extents,
-    size,
+    size: null,
   }
 }
 

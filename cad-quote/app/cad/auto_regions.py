@@ -72,8 +72,11 @@ def _bbox_area(bbox: BBox) -> float:
 
 
 def _document_bbox(document: CadDocument) -> Optional[BBox]:
-    if document.extents:
-        return document.extents
+    # 仅当 extents 合法（xmin<xmax 且 ymin<ymax）时采用；否则从实体坐标推断。
+    # 新建/未审核的 DXF 常带未初始化的 EXTMIN/EXTMAX 哨兵值（如 ±1e20）。
+    ext = document.extents
+    if ext and ext[0] < ext[2] and ext[1] < ext[3]:
+        return ext
     pts: List[Tuple[float, float]] = []
     for t in document.texts:
         pts.append((t.x, t.y))
