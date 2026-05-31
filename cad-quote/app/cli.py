@@ -96,6 +96,10 @@ def _build_argparser() -> argparse.ArgumentParser:
         "--prefer", default="auto", choices=["auto", "rectangle", "layer"]
     )
     p_auto.add_argument("--out", default=None, help="把结果写入此 JSON 文件，省略则打印到 stdout")
+
+    p_preview = sub.add_parser("preview", help="导出 SVG 矢量预览（清晰、快、无需栅格化）")
+    p_preview.add_argument("--dxf", required=True, help="DXF 或 DWG 文件路径")
+    p_preview.add_argument("--out", required=True, help="输出 SVG 路径")
     return parser
 
 
@@ -144,6 +148,13 @@ def main(argv: List[str] | None = None) -> int:
             print(f"已写入 {len(payload)} 个区域到 {args.out}")
         else:
             print(text)
+        return 0
+
+    if args.cmd == "preview":
+        from .cad.svg_export import render_svg
+
+        render_svg(args.dxf, args.out)
+        print(f"SVG 预览已写入：{args.out}")
         return 0
 
     if args.cmd == "quote":

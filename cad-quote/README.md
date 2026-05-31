@@ -96,6 +96,25 @@ curl -F file=@drawing.dxf -F request_json='{"regions":[{"name":"r","bbox":[0,0,1
      http://127.0.0.1:8000/quote/pdf -o quote.pdf
 ```
 
+### P3 增量：数据提取与预览分离
+
+**数据提取与图纸预览完全解耦**，解决原 PNG 预览「不清晰 + 慢」的问题：
+
+- **报价数据**（Block 名称、属性、文字）由 `app/cad/parser.py` 直接从矢量实体读取，
+  **不需要**任何图片渲染。
+- **图纸预览**改用 **SVG 矢量导出**（`app/cad/svg_export.py`，基于 ezdxf SVG 后端）：
+  清晰、可无限缩放、保留线宽/图层色，且无需栅格化，速度快。
+- **DWG 只转换一次**：`app/cad/dwg.py` 的 `resolve_to_dxf()` 按文件指纹缓存转换结果，
+  同一份 DWG 在解析与预览之间只调用一次 ODA/LibreDWG，后续全程走 ezdxf。
+
+```bash
+# CLI: 导出 SVG 矢量预览（DXF 或 DWG 均可）
+python -m app.cli preview --dxf drawing.dwg --out preview.svg
+
+# REST: 上传 DXF/DWG → 返回 image/svg+xml（响应头 X-Cad-Extents 给出 DXF 坐标范围）
+curl -F file=@drawing.dxf http://127.0.0.1:8000/preview -o preview.svg
+```
+
 ## 🧰 命令行用法
 
 ```bash
