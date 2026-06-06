@@ -22,7 +22,7 @@ import argparse
 import json
 import os
 import sys
-from typing import List
+from typing import List, Optional, Tuple
 
 from .cad.parser import parse_cad, parse_dxf
 from .catalog.catalog import ProductCatalog
@@ -31,6 +31,13 @@ from .quote.customers import default_registry as default_customer_registry
 from .quote.engine import build_quote
 from .quote.exporter import to_csv, to_excel, to_pdf
 from .quote.strategies import available_strategies, create_strategy
+from .schedule import extract_panel_schedule
+from .schedule.exporter import (
+    schedule_to_rows,
+    to_csv as schedule_to_csv,
+    to_excel as schedule_to_excel,
+    to_json as schedule_to_json,
+)
 
 
 def _load_regions(path: str):
@@ -40,6 +47,51 @@ def _load_regions(path: str):
     for item in raw:
         regions.append((item["name"], tuple(item["bbox"])))
     return regions
+
+
+def _parse_bbox_arg(value: Optional[str]) -> Optional[Tuple[float, float, float, float]]:
+    if not value:
+        return None
+    parts = [part.strip() for part in value.split(",")]
+    if len(parts) != 4:
+        raise ValueError("--bbox 必须是 xmin,ymin,xmax,ymax")
+    try:
+        return tuple(float(part) for part in parts)  # type: ignore[return-value]
+    except ValueError as exc:
+        raise ValueError("--bbox 必须是合法数字：xmin,ymin,xmax,ymax") from exc
+
+
+def _print_schedule_summary(schedule) -> None:
+    print("配电箱头信息：")
+    for label, value in [
+        ("箱名", schedule.header.name),
+        ("编号", schedule.header.code),
+        ("Pe", schedule.header.pe),
+        ("Kx", schedule.header.kx),
+        ("cosφ", schedule.header.cos_phi),
+        ("Ijs", schedule.header.ijs),
+        ("进线总开关", schedule.header.main_breaker),
+        ("接触器", schedule.header.contactor),
+        ("SPD", schedule.header.spd),
+        ("尺寸", schedule.header.size),
+        ("安装方式", schedule.header.install),
+    ]:
+        if value:
+            print(f"  {label}: {value}")
+
+    rows = schedule_to_rows(schedule)
+    print("\n回路清单：")
+    if not rows:
+        print("  （未识别到回路）")
+        return
+    header = ["回路", "断路器", "极数", "曲线", "整定", "相序", "电缆", "敷设", "负荷", "用途"]
+    widths = {
+        key: max(len(key), *(len(str(row[key])) for row in rows))
+        for key in header
+    }
+    print("  " + "  ".join(key.ljust(widths[key]) for key in header))
+    for row in rows:
+        print("  " + "  ".join(str(row[key]).ljust(widths[key]) for key in header))
 
 
 def _build_argparser() -> argparse.ArgumentParser:
@@ -100,6 +152,15 @@ def _build_argparser() -> argparse.ArgumentParser:
     p_preview = sub.add_parser("preview", help="导出 SVG 矢量预览（清晰、快、无需栅格化）")
     p_preview.add_argument("--dxf", required=True, help="DXF 或 DWG 文件路径")
     p_preview.add_argument("--out", required=True, help="输出 SVG 路径")
+
+    p_schedule = sub.add_parser("schedule", help="提取配电箱系统图回路表")
+    p_schedule.add_argument("--dxf", required=True, help="DXF 或 DWG 文件路径")
+    p_schedule.add_argument(
+        "--bbox", default=None, help="可选提取范围 xmin,ymin,xmax,ymax"
+    )
+    p_schedule.add_argument("--json", default=None, help="输出 JSON 路径")
+    p_schedule.add_argument("--excel", default=None, help="输出 Excel 路径")
+    p_schedule.add_argument("--csv", default=None, help="输出 CSV 路径")
     return parser
 
 
@@ -155,6 +216,26 @@ def main(argv: List[str] | None = None) -> int:
 
         render_svg(args.dxf, args.out)
         print(f"SVG 预览已写入：{args.out}")
+        return 0
+
+    if args.cmd == "schedule":
+        try:
+            bbox = _parse_bbox_arg(args.bbox)
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        document = parse_cad(args.dxf)
+        schedule = extract_panel_schedule(document, bbox=bbox)
+        _print_schedule_summary(schedule)
+        if args.json:
+            schedule_to_json(schedule, args.json)
+            print(f"\nJSON 已写入：{args.json}")
+        if args.excel:
+            schedule_to_excel(schedule, args.excel)
+            print(f"Excel 已写入：{args.excel}")
+        if args.csv:
+            schedule_to_csv(schedule, args.csv)
+            print(f"CSV 已写入：{args.csv}")
         return 0
 
     if args.cmd == "quote":
