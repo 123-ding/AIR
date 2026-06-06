@@ -29,6 +29,8 @@ from ..quote.customers import default_registry as default_customer_registry
 from ..quote.engine import build_quote
 from ..quote.exporter import to_excel, to_pdf, quote_to_rows
 from ..quote.strategies import available_strategies, create_strategy
+from ..schedule import extract_panel_schedule
+from ..schedule.exporter import schedule_to_dict, to_excel as schedule_to_excel
 from .admin import get_store, router as admin_router
 
 
@@ -77,6 +79,10 @@ class QuoteRequest(BaseModel):
     llm_params: dict = {}
 
 
+class ScheduleRequest(BaseModel):
+    bbox: Optional[List[float]] = None
+
+
 _DEFAULT_CATALOG: Optional[ProductCatalog] = None
 
 
@@ -115,6 +121,15 @@ def _validate_body_and_suffix(file: UploadFile, body: "QuoteRequest") -> str:
     suffix = os.path.splitext(file.filename or "")[1].lower() or ".dxf"
     if suffix not in (".dxf", ".dwg"):
         raise HTTPException(status_code=400, detail="仅支持 .dxf / .dwg 文件。")
+    return suffix
+
+
+def _validate_schedule_body_and_suffix(file: UploadFile, body: "ScheduleRequest") -> str:
+    suffix = os.path.splitext(file.filename or "")[1].lower() or ".dxf"
+    if suffix not in (".dxf", ".dwg"):
+        raise HTTPException(status_code=400, detail="仅支持 .dxf / .dwg 文件。")
+    if body.bbox is not None and len(body.bbox) != 4:
+        raise HTTPException(status_code=400, detail="bbox 必须是 4 个数字。")
     return suffix
 
 
@@ -210,6 +225,23 @@ def _build_quote_from_upload(
             pass
 
 
+def _build_schedule_from_upload(
+    file_bytes: bytes, suffix: str, body: "ScheduleRequest"
+):
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+        tmp.write(file_bytes)
+        tmp_path = tmp.name
+    try:
+        document = parse_cad(tmp_path)
+        bbox = tuple(body.bbox) if body.bbox is not None else None
+        return extract_panel_schedule(document, bbox=bbox)
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
+
 @app.post("/quote")
 async def quote_endpoint(
     file: UploadFile = File(..., description="DXF / DWG 文件"),
@@ -283,6 +315,48 @@ async def quote_pdf(
         out_path,
         media_type="application/pdf",
         filename="quote.pdf",
+    )
+
+
+@app.post("/schedule")
+async def schedule_endpoint(
+    file: UploadFile = File(..., description="DXF / DWG 文件"),
+    request_json: str = Form("{}", description="JSON 字符串，结构同 ScheduleRequest"),
+):
+    import json
+
+    try:
+        body = ScheduleRequest(**json.loads(request_json or "{}"))
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=f"无效的 request_json: {exc}")
+    suffix = _validate_schedule_body_and_suffix(file, body)
+    file_bytes = await _read_file(file)
+    schedule = _build_schedule_from_upload(file_bytes, suffix, body)
+    return JSONResponse(schedule_to_dict(schedule))
+
+
+@app.post("/schedule/excel")
+async def schedule_excel(
+    file: UploadFile = File(...),
+    request_json: str = Form("{}"),
+):
+    import json
+
+    try:
+        body = ScheduleRequest(**json.loads(request_json or "{}"))
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=f"无效的 request_json: {exc}")
+    suffix = _validate_schedule_body_and_suffix(file, body)
+    file_bytes = await _read_file(file)
+    schedule = _build_schedule_from_upload(file_bytes, suffix, body)
+
+    out_dir = tempfile.mkdtemp(prefix="schedule_")
+    out_path = os.path.join(out_dir, "panel_schedule.xlsx")
+    schedule_to_excel(schedule, out_path)
+    return FileResponse(
+        out_path,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        filename="panel_schedule.xlsx",
     )
 
 
