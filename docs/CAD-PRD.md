@@ -62,6 +62,14 @@
   - **DWG 只转换一次**：`app/cad/dwg.py` 的 `resolve_to_dxf()` 按文件指纹缓存，同一份 DWG 在解析与预览间只调用一次 ODA/LibreDWG，后续全程走 ezdxf（速度与精度最优）
   - 对应入口：CLI `preview` 子命令；REST `POST /preview`（返回 `image/svg+xml`，响应头 `X-Cad-Extents` 给出 DXF 坐标范围）
 
+### P4（本次新增）
+- **配电箱系统图结构化回路提取**：
+  - 新增 `app/schedule/`，直接基于 `CadText(text / x / y / layer / height)` 做「按行列重建表格」
+  - 输出 `PanelSchedule`：`PanelHeader`（箱名、编号、Pe、Kx、cosφ、Ijs、总开关、接触器、SPD、尺寸、安装方式）+ `CircuitRow[]`（回路 / 断路器 / 极数 / 曲线 / 整定 / 相序 / 电缆 / 敷设 / 负荷 / 用途）
+  - 纯算法部分不依赖 `ezdxf`，可直接对内存中的 `List[CadText]` 运行并单测
+  - 新增入口：CLI `schedule`、REST `POST /schedule`、`POST /schedule/excel`
+  - 支持 JSON / CSV / Excel；Excel 中配电箱头信息独立 sheet
+
 ## 5. 关键模块
 
 | 模块 | 路径 | 职责 |
@@ -71,6 +79,8 @@
 | SVG 预览 | `cad-quote/app/cad/svg_export.py` | DXF/DWG → SVG 矢量预览（与数据提取解耦） |
 | 拼图 | `cad-quote/app/cad/compositor.py` | PIL 网格拼接 |
 | 型号提取 | `cad-quote/app/ocr/extractor.py` | 从 DXF 文本/块名识别型号 |
+| 回路提取 | `cad-quote/app/schedule/panel_schedule.py` | 配电箱系统图按行列重建 + 字段抽取 |
+| 回路导出 | `cad-quote/app/schedule/exporter.py` | 回路 JSON / CSV / Excel 导出 |
 | 型号库 | `cad-quote/app/catalog/catalog.py` | 加载 YAML 型号 + 价格 |
 | 报价策略 | `cad-quote/app/quote/strategies.py` | 策略模式：standard/discount/tiered/bundle |
 | 报价引擎 | `cad-quote/app/quote/engine.py` | 编排：参数表 + 策略 → 报价单 |

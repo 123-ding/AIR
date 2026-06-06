@@ -8,6 +8,7 @@
 1. 解析 CAD 图纸（DXF），按用户指定的多个矩形区域裁剪，拼成一张总图。
 2. 从每个区域内识别**设备型号 / 规格 / 数量**，输出结构化清单。
 3. 支持多种**报价策略**（标准 / 折扣 / 阶梯 / 打包），输出 Excel 报价单。
+4. 从**配电箱系统图**中提取配电箱头信息与回路清单，支持 JSON / CSV / Excel 导出。
 
 ## 📦 目录结构
 
@@ -16,6 +17,7 @@ cad-quote/
 ├── app/
 │   ├── cad/         # DXF 解析、区域渲染、PIL 拼图
 │   ├── ocr/         # 型号/参数识别（基于 DXF 文本 + 块名，OCR 兜底预留）
+│   ├── schedule/    # 配电箱系统图回路提取
 │   ├── catalog/     # 型号库 (YAML)
 │   ├── quote/       # 报价策略 + 引擎 + 导出
 │   ├── api/         # FastAPI HTTP 接口
@@ -115,6 +117,48 @@ python -m app.cli preview --dxf drawing.dwg --out preview.svg
 curl -F file=@drawing.dxf http://127.0.0.1:8000/preview -o preview.svg
 ```
 
+### P4 增量：配电箱系统图回路提取
+
+- 新增 `app/schedule/`，直接对 `app/cad/parser.py` 输出的 `CadText` 做坐标聚类与字段抽取。
+- 输出 `PanelSchedule`：
+  - `header`：箱名、编号、Pe、Kx、cosφ、Ijs、进线总开关、接触器、SPD、尺寸、安装方式
+  - `circuits`：回路 / 断路器 / 极数 / 曲线 / 整定 / 相序 / 电缆 / 敷设 / 负荷 / 用途
+- 支持 CLI `schedule`、REST `POST /schedule` / `POST /schedule/excel`
+- 支持 JSON / CSV / Excel；Excel 中配电箱头信息单独输出为 sheet
+
+结构化输出样例：
+
+```json
+{
+  "header": {
+    "name": "屋顶景观照明配电箱",
+    "code": "ALY",
+    "pe": "20.0kW",
+    "kx": "1",
+    "cos_phi": "0.85",
+    "ijs": "35.76A",
+    "main_breaker": "CDB6i 3P C型 40A",
+    "contactor": "JZ7-44 380V",
+    "size": "600X600X150",
+    "install": "电井挂墙明装"
+  },
+  "circuits": [
+    {
+      "circuit": "N1",
+      "breaker": "CDB6PLEi",
+      "poles": "2P",
+      "curve": "C型",
+      "rating": "20A/0.03",
+      "phase": "L1",
+      "cable": "WDZ-BYJ-(3X4)",
+      "conduit": "SC20",
+      "load": "3KW",
+      "usage": "预留投光灯回路"
+    }
+  ]
+}
+```
+
 ## 🧰 命令行用法
 
 ```bash
@@ -151,6 +195,14 @@ python -m app.cli quote \
     --regions examples/regions.json \
     --strategy bundle \
     --strategy-params '{"labor":500,"transport":200,"extra_pct":0.05}'
+
+# 提取配电箱系统图回路表
+python -m app.cli schedule \
+    --dxf examples/panel.dxf \
+    --bbox 0,0,400,200 \
+    --json out/panel.json \
+    --excel out/panel.xlsx \
+    --csv out/panel.csv
 ```
 
 ### `regions.json` 格式
@@ -177,12 +229,14 @@ uvicorn app.api.main:app --app-dir cad-quote --reload
 | GET  | `/catalog`     | 列出默认型号库 |
 | POST | `/quote`       | 上传 DXF + JSON 区域，返回报价 JSON |
 | POST | `/quote/excel` | 同上，返回 Excel 文件下载 |
+| POST | `/schedule`    | 上传 DXF/DWG，返回配电箱系统图回路 JSON |
+| POST | `/schedule/excel` | 同上，返回回路 Excel 文件下载 |
 
 ## 🧪 测试
 
 ```bash
 cd cad-quote
-pytest -q
+python -m pytest -q
 ```
 
 DXF 端到端测试需要安装 `ezdxf`，否则会自动跳过。
